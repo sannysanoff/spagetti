@@ -162,31 +162,36 @@ func Serve(ctx context.Context, o Options) error {
 	if err := o.setDefaults(); err != nil {
 		return err
 	}
-	files, err := conf.EnsureServer(o.ConfDir, o.ServerID)
-	if err != nil {
-		return err
-	}
-	if len(o.Identity.Priv) == 0 {
-		o.Identity = files.Identity
-	}
-	if len(o.Password) == 0 {
-		o.Password = files.Password
-	}
-	if files.Created {
-		first := FirstRun{
-			ServerID:     o.ServerID,
-			Dir:          files.Dir,
-			PubFile:      files.PubFile,
-			PasswordFile: files.PasswordFile,
-			Fingerprint:  files.Identity.Fingerprint(),
+	// An embedder that supplies both the identity and the password has nothing to
+	// load or generate, and must not have a second, unused keypair written into
+	// ConfDir — or be told about files it does not use.
+	if len(o.Identity.Priv) == 0 || len(o.Password) == 0 {
+		files, err := conf.EnsureServer(o.ConfDir, o.ServerID)
+		if err != nil {
+			return err
 		}
-		peerDir := conf.PeerDir(o.ConfDir, o.ServerID)
-		first.CopyCommands = fmt.Sprintf(
-			"mkdir -p %s && cp %s %s/identity.pub && cp %s %s/access.password",
-			peerDir, files.PubFile, peerDir, files.PasswordFile, peerDir)
-		o.announceFirstRun(first)
-		if o.OnFirstRun != nil {
-			o.OnFirstRun(first)
+		if len(o.Identity.Priv) == 0 {
+			o.Identity = files.Identity
+		}
+		if len(o.Password) == 0 {
+			o.Password = files.Password
+		}
+		if files.Created {
+			first := FirstRun{
+				ServerID:     o.ServerID,
+				Dir:          files.Dir,
+				PubFile:      files.PubFile,
+				PasswordFile: files.PasswordFile,
+				Fingerprint:  files.Identity.Fingerprint(),
+			}
+			peerDir := conf.PeerDir(o.ConfDir, o.ServerID)
+			first.CopyCommands = fmt.Sprintf(
+				"mkdir -p %s && cp %s %s/identity.pub && cp %s %s/access.password",
+				peerDir, files.PubFile, peerDir, files.PasswordFile, peerDir)
+			o.announceFirstRun(first)
+			if o.OnFirstRun != nil {
+				o.OnFirstRun(first)
+			}
 		}
 	}
 	token, err := o.resolveToken()
@@ -194,12 +199,14 @@ func Serve(ctx context.Context, o Options) error {
 		return err
 	}
 	s := &instance{
-		o: o, files: files, token: token,
+		o: o, token: token,
 		nonces:  e2e.NewNonceCache(o.ReplayWindow),
 		serving: map[wire.Channel]struct{}{},
 	}
+	// the identity in use, which is the one the gateway registers and a client
+	// pins; files.Identity can be a different, unused keypair
 	o.Logf("spagetti: server %q ready (fingerprint %s, epoch %s, channel lifetime %s)",
-		o.ServerID, files.Identity.Fingerprint(), o.EpochLifetime, o.MaxChannelLifetime)
+		o.ServerID, o.Identity.Fingerprint(), o.EpochLifetime, o.MaxChannelLifetime)
 	return s.run(ctx)
 }
 
@@ -239,7 +246,6 @@ func (o Options) resolveToken() (string, error) {
 
 type instance struct {
 	o      Options
-	files  conf.ServerFiles
 	token  string
 	nonces *e2e.NonceCache
 

@@ -53,9 +53,9 @@ a content key.
 
 ## Quick start
 
-Three binaries: `spagetti-gateway` (run it where both sides can reach it),
-`examples/echo-server` (a wrapped server, for testing), `spagetti-call` (a client
-for humans).
+Four binaries: `spagetti-gateway` (run it where both sides can reach it),
+`spagetti-wrap` (publish a webserver you already have), `examples/echo-server`
+(a wrapped server, for testing), `spagetti-call` (a client for humans).
 
 ```sh
 # 1. the relay
@@ -82,6 +82,40 @@ The pin step is the human part of the protocol, and it is deliberately file-shap
 used directly as the Noise PSK. Copy both to the client and nothing else is
 needed. `SPAGETTI_CONF_DIR` defaults to `~/.spagetti`; the layout is documented in
 `conf/`.
+
+## Publishing a webserver you already have
+
+`spagetti-wrap` puts a target webserver behind the gateway by reverse-proxying it,
+so a service that knows nothing about spagetti needs no change at all — it sees
+ordinary requests and can stream or speak websockets. The target and every
+credential come from an env file; the command line takes nothing but that file:
+
+```sh
+go build -o bin/ ./cmd/spagetti-wrap
+./bin/spagetti-wrap -env /etc/spagetti/web1.env     # .env is the default
+```
+
+```
+# /etc/spagetti/web1.env — chmod 600, it holds the token and the password
+SPAGETTY_TARGET=http://127.0.0.1:9000            # required: the webserver to expose
+SPAGETTY_NAME=web1                               # required: the name clients ask for
+SPAGETTY_TOKEN=...                               # required: the gateway's server token
+SPAGETTY_PASSWORD=...                            # required: base64url of 32 bytes
+#   mint one with: openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
+SPAGETTY_ENDPOINT=https://mux.san.systems/ws     # optional, this is the default
+SPAGETTY_KEYS=.spagetti-keys                     # optional: keypair cache file
+```
+
+Values are resolved from the process environment first, then from the file named
+with `-env`, then from `.env`. Every file that exists is read and each source only
+fills in what is still missing, so an exported variable overrides a file without
+editing it. A required key that no source supplies refuses to start instead of
+guessing. The keypair is minted into `SPAGETTY_KEYS` on the first run and reused
+afterwards; `<cache>.pub` and `<cache>.password` are written next to it, and those
+two files are what a client pins.
+
+It logs the connection to the gateway, and one line per forwarded request —
+timestamp, verb, path — at request time, with nothing about responses.
 
 ## Using it as a library
 
