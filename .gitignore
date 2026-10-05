@@ -14,3 +14,8 @@ access.password
 *.log
 .tmp_*/
 .DS_Store
+
+# the gateway config for the deployed relay: it holds the bearer tokens, is
+# passed to docker_build.sh as a BuildKit secret, and must never be committed.
+.mux_config.json
+cmd/spagetti-gateway/embedded_gen.go

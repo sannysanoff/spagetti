@@ -1,0 +1,20 @@
+# The gateway config carries the bearer tokens; it is passed to the build as a
+# BuildKit secret, never as context.
+.mux_config.json
+cmd/spagetti-gateway/embedded_gen.go
+
+# build output and local scratch
+/bin/
+*.log
+.tmp_*/
+.DS_Store
+
+# local identity and secrets (see README): keypairs and access passwords
+.spagetti/
+*.key
+identity.pub
+access.password
+
+# never ship vcs metadata
+.git
+.gitignore

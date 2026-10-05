@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
@@ -151,15 +152,26 @@ type fileConfig struct {
 
 // LoadConfigFile reads a gateway configuration file.
 func LoadConfigFile(path string) (Config, error) {
-	var fc fileConfig
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return Config{}, fmt.Errorf("spagetti: reading %s: %w", path, err)
 	}
-	dec := json.NewDecoder(strings.NewReader(string(b)))
+	cfg, err := LoadConfig(b)
+	if err != nil {
+		return Config{}, fmt.Errorf("spagetti: parsing %s: %w", path, err)
+	}
+	return cfg, nil
+}
+
+// LoadConfig parses a gateway configuration from memory: the same document
+// LoadConfigFile reads. An image built by docker_build.sh carries its config
+// compiled in and reaches this function without a file on disk.
+func LoadConfig(raw []byte) (Config, error) {
+	var fc fileConfig
+	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&fc); err != nil {
-		return Config{}, fmt.Errorf("spagetti: parsing %s: %w", path, err)
+		return Config{}, err
 	}
 	return fc.config()
 }
