@@ -1,0 +1,16 @@
+# build output
+/bin/
+*.test
+coverage.out
+
+# local identity and secrets: spagetti writes keypairs and access passwords here.
+# They must never be committed — a pinned peer's password is the channel PSK.
+.spagetti/
+*.key
+identity.pub
+access.password
+
+# scratch
+*.log
+.tmp_*/
+.DS_Store
