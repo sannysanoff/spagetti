@@ -29,17 +29,38 @@ func buildCmd(t *testing.T, root, dir, pkg string) string {
 	return out
 }
 
-// cleanEnv is os.Environ without any SPAGETTY_ variable, so a test never inherits
-// wrapper settings from the shell that runs it.
+// cleanEnv is os.Environ without any spagetti settings, so a test never inherits
+// a wrapper or library setting from the shell that runs it.
 func cleanEnv(extra ...string) []string {
 	var out []string
 	for _, kv := range os.Environ() {
-		if strings.HasPrefix(kv, "SPAGETTY_") {
+		if strings.HasPrefix(kv, "SPAGETTY_") || strings.HasPrefix(kv, "SPAGETTI_") {
 			continue
 		}
 		out = append(out, kv)
 	}
 	return append(out, extra...)
+}
+
+// guardHomeConfDir fails a test that writes the library's default conf dir into
+// the home directory. A wrapper started without SPAGETTY_CONF_DIR mints its
+// enrolment there, which is how test runs came to leave ~/.spagetti behind.
+func guardHomeConfDir(t *testing.T) {
+	t.Helper()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	path := filepath.Join(home, ".spagetti")
+	existed := false
+	if _, err := os.Stat(path); err == nil {
+		existed = true
+	}
+	t.Cleanup(func() {
+		if _, err := os.Stat(path); err == nil && !existed {
+			t.Errorf("this test created %s; run the wrapper with SPAGETTY_CONF_DIR pointed at a temp dir", path)
+		}
+	})
 }
 
 // secretFile writes an env file the way an operator would keep it.
@@ -59,7 +80,8 @@ func runWrap(t *testing.T, bin, dir string, env []string, args ...string) (strin
 	t.Helper()
 	cmd := exec.Command(bin, args...)
 	cmd.Dir = dir
-	cmd.Env = append(cleanEnv(), env...)
+	// keep the library's enrolment out of the home directory
+	cmd.Env = append(cleanEnv(), append(env, "SPAGETTY_CONF_DIR="+filepath.Join(dir, "conf"))...)
 	var buf bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &buf, &buf
 	if err := cmd.Start(); err != nil {
@@ -92,6 +114,7 @@ func TestWrapPublishesATargetWebserver(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds and runs binaries")
 	}
+	guardHomeConfDir(t)
 	root := moduleRoot(t)
 	binDir := t.TempDir()
 	wrapBin := buildCmd(t, root, binDir, "./cmd/spagetti-wrap")
@@ -120,6 +143,7 @@ func TestWrapPublishesATargetWebserver(t *testing.T) {
 	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws"
 
 	work := t.TempDir()
+	confEnv := []string{"SPAGETTY_CONF_DIR=" + filepath.Join(work, "conf")}
 	keys := filepath.Join(work, "keys")
 	envPath := filepath.Join(work, "wrap.env")
 	secretFile(t, envPath, strings.Join([]string{
@@ -134,7 +158,7 @@ func TestWrapPublishesATargetWebserver(t *testing.T) {
 		"SPAGETTY_KEYS=" + keys,
 	}, "\n")+"\n")
 
-	p := startProc(t, root, "wrap", wrapBin, nil, "-env", envPath)
+	p := startProc(t, root, "wrap", wrapBin, confEnv, "-env", envPath)
 	p.waitFor(t, regexp.MustCompile(`registered "wrapped" with the gateway`), 20*time.Second)
 	startup := p.snapshot()
 	if !strings.Contains(startup, "connecting to the gateway "+wsURL) {
@@ -221,7 +245,7 @@ func TestWrapPublishesATargetWebserver(t *testing.T) {
 	}
 	stopProc(p)
 
-	p2 := startProc(t, root, "wrap", wrapBin, nil, "-env", envPath)
+	p2 := startProc(t, root, "wrap", wrapBin, confEnv, "-env", envPath)
 	p2.waitFor(t, regexp.MustCompile(`server "wrapped" fingerprint spg1:`), 20*time.Second)
 	if strings.Contains(p2.snapshot(), "first run: minted the keypair") {
 		t.Errorf("the second run minted a new keypair instead of reusing %s:\n%s", keys, p2.snapshot())
@@ -239,6 +263,7 @@ func TestWrapRefusesMisconfiguration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds and runs binaries")
 	}
+	guardHomeConfDir(t)
 	root := moduleRoot(t)
 	wrapBin := buildCmd(t, root, t.TempDir(), "./cmd/spagetti-wrap")
 	good := "SPAGETTY_TARGET=http://127.0.0.1:9\nSPAGETTY_TOKEN=tok\nSPAGETTY_NAME=web1\n"
