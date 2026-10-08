@@ -36,6 +36,7 @@ type evilRelay struct {
 	recorded []byte
 	frames   []wire.Frame
 	raws     [][]byte
+	dirs     []string
 
 	// hook decides what is forwarded: nil drops the frame, otherwise every entry
 	// is written in order (returning the same frame twice duplicates it).
@@ -77,7 +78,7 @@ func (e *evilRelay) pump(dir string, from, to *websocket.Conn) {
 			to.Close()
 			return
 		}
-		e.record(b)
+		e.record(b, dir)
 		out := [][]byte{b}
 		if e.hook != nil {
 			if f, err := wire.Parse(b); err == nil {
@@ -94,20 +95,22 @@ func (e *evilRelay) pump(dir string, from, to *websocket.Conn) {
 	}
 }
 
-func (e *evilRelay) record(b []byte) {
+func (e *evilRelay) record(b []byte, dir string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.recorded = append(e.recorded, b...)
 	if f, err := wire.Parse(b); err == nil {
 		e.frames = append(e.frames, f)
 		e.raws = append(e.raws, append([]byte(nil), b...))
+		e.dirs = append(e.dirs, dir)
 	}
 }
 
-func (e *evilRelay) snapshot() ([]byte, []wire.Frame, [][]byte) {
+func (e *evilRelay) snapshot() ([]byte, []wire.Frame, [][]byte, []string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return append([]byte(nil), e.recorded...), append([]wire.Frame(nil), e.frames...), append([][]byte(nil), e.raws...)
+	return append([]byte(nil), e.recorded...), append([]wire.Frame(nil), e.frames...),
+		append([][]byte(nil), e.raws...), append([]string(nil), e.dirs...)
 }
 
 func TestRelaySeesCiphertextOnly(t *testing.T) {
@@ -135,7 +138,7 @@ func TestRelaySeesCiphertextOnly(t *testing.T) {
 		t.Fatalf("response did not arrive: %q", body)
 	}
 
-	recorded, frames, _ := e.snapshot()
+	recorded, frames, _, _ := e.snapshot()
 	if len(recorded) < 100 {
 		t.Fatalf("the relay recorded only %d bytes; the recorder is broken", len(recorded))
 	}
@@ -395,14 +398,19 @@ func TestCapturedHandshakeCannotBeReplayed(t *testing.T) {
 	c := h.client(func(o *client.Options) { o.GatewayURL = evilWS })
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	resp, err := c.HTTPClient(h.serverID).Get(h.url("/"))
+	// The baseline call must not leave its channel behind: a pooled idle
+	// connection would keep the routing label live at the gateway, and the
+	// replay below would be refused as a duplicate before it started.
+	req, _ := http.NewRequestWithContext(ctx, "GET", h.url("/"), nil)
+	req.Close = true
+	resp, err := c.HTTPClient(h.serverID).Do(req)
 	if err != nil {
 		t.Fatalf("baseline call: %v", err)
 	}
 	resp.Body.Close()
 
 	// Pull the caller's records and the routing label out of the recording.
-	_, frames, raws := e.snapshot()
+	_, frames, raws, dirs := e.snapshot()
 	var channel wire.Channel
 	var epoch int64
 	var records [][]byte
@@ -412,13 +420,13 @@ func TestCapturedHandshakeCannotBeReplayed(t *testing.T) {
 			channel = f.Open.Channel
 			epoch = f.Open.Epoch
 		case wire.TData:
-			if channel != (wire.Channel{}) && f.Data.Channel == channel {
+			if dirs[i] == "c2g" && channel != (wire.Channel{}) && f.Data.Channel == channel {
 				records = append(records, raws[i])
 			}
 		}
 	}
 	if len(records) < 2 {
-		t.Fatalf("captured %d records, need the handshake and the ready record", len(records))
+		t.Fatalf("captured %d caller records, need the handshake and the ready record", len(records))
 	}
 
 	// Replay them onto the same label, epoch and key with a fresh connection.
@@ -429,7 +437,18 @@ func TestCapturedHandshakeCannotBeReplayed(t *testing.T) {
 		t.Fatalf("replayer dial: %v", err)
 	}
 	defer rc.Close()
-	ch, err := rc.OpenWithLabel(ctx, h.serverID, epoch, channel)
+	// The gateway frees the label the moment the baseline channel died, but the
+	// server clears its own serving map from another goroutine; a refusal to
+	// serve "already being served" is teardown lag, not a verdict on the replay.
+	deadline := time.Now().Add(5 * time.Second)
+	var ch *tunnel.Channel
+	for {
+		ch, err = rc.OpenWithLabel(ctx, h.serverID, epoch, channel)
+		if code, ok := wire.CodeOf(err); err == nil || !ok || code != wire.CodeDuplicateChannel || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 	if err != nil {
 		t.Fatalf("replayer open: %v", err)
 	}
